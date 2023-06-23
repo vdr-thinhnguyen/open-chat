@@ -1,114 +1,296 @@
-import Head from 'next/head'
-import Image from 'next/image'
-import { Inter } from 'next/font/google'
-import styles from '@/styles/Home.module.css'
+import React, { useState, useCallback, useEffect } from "react";
+import styled, { css } from "styled-components";
+import SearchInput from "@/components/SearchInput";
+import { IMessage, IConversation, IRootReducer } from "@/types";
+import { Configuration, OpenAIApi } from "openai";
+import Head from "next/head";
+import Image from "next/image";
+import DotLoading from "@/components/DotLoading";
+import {
+  colors,
+  breakpoint,
+  useResponsive,
+  uuidV4,
+  updateConversationByUuid,
+} from "@/utils";
+import useScrollToBottom from "@/hooks/useScrollToBottom";
+import Sidebar from "@/components/Sidebar";
+import { useDispatch, useSelector } from "react-redux";
+import {
+  updateConversation,
+  setConversationActive,
+  setMenuOpen,
+} from "@redux/slices/root";
 
-const inter = Inter({ subsets: ['latin'] })
+const Container = styled.div<{ isMenuOpen: boolean }>`
+  width: 100%;
+  text-align: center;
+  overflow-x: auto;
+  max-height: calc(100vh - 6.5rem);
 
-export default function Home() {
+  ${breakpoint("lg")`
+    max-height: calc(100vh - 12rem);
+  `}
+
+  ${({ isMenuOpen }) =>
+    isMenuOpen && `width: calc(100% - 250px); float: right;`}
+`;
+
+const Title = styled.h1`
+  font-size: 1.25rem;
+  line-height: 1.5rem;
+  text-align: center;
+  color: #4d2b15;
+  margin: 0;
+
+  ${breakpoint("md")`
+    font-size: 2rem;
+    line-height: 2.5rem;
+  `};
+`;
+const Result = styled.div``;
+
+const InputWrapper = styled.div<{ isMenuOpen: boolean }>`
+  position: fixed;
+  bottom: 1rem;
+  left: 1rem;
+  width: calc(100% - 2rem);
+  box-shadow: rgba(0, 0, 0, 0.35) 0px 5px 15px;
+
+  ${breakpoint("md")`
+    left: 2rem;
+    bottom: 4rem;
+    width: calc(100% - 4rem);
+  `}
+
+  ${({ isMenuOpen }) =>
+    isMenuOpen &&
+    css`
+      ${breakpoint("md")`
+      width: calc(100% - 250px - 2rem);
+      left: calc(250px + 1rem);
+   
+  `}
+    `}
+`;
+
+const Row = styled.div`
+  text-align: left;
+  padding: 1rem 2.5rem;
+  display: flex;
+  align-items: center;
+
+  span {
+    margin-left: 1rem;
+  }
+
+  ${breakpoint("md")`
+    padding: 1.25rem 6rem;
+  `}
+
+  &:first-child {
+    border-top: none;
+  }
+
+  &:nth-child(even) {
+    background-color: ${colors.lighterGrey};
+  }
+
+  &:nth-child(odd) {
+    background-color: ${colors.white};
+    border-top: 1px solid ${colors.secondaryGrey};
+    border-bottom: 1px solid ${colors.secondaryGrey};
+  }
+`;
+
+const HomePage = () => {
+  const conversations = useSelector(
+    (state: IRootReducer) => state?.conversations
+  );
+  const conversationActive = useSelector(
+    (state: IRootReducer) => state?.conversationActive
+  );
+  const menuOpen = useSelector((state: IRootReducer) => state?.menuOpen);
+
+  const [prompt, setPrompt] = useState("");
+  const [messages, setMessages] = useState<Array<IMessage>>([]);
+  const [loading, setLoading] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(menuOpen);
+  const [currUuid, setCurrUuid] = useState(conversationActive || "");
+  const [isNewChat, setIsNewChat] = useState(false);
+
+  const scrollRef = useScrollToBottom(messages);
+
+  const isDesktop = useResponsive({ breakpoint: "md" });
+
+  const dispatch = useDispatch();
+
+  useEffect(() => {
+    if (conversations?.length > 0) {
+      if (conversationActive) {
+        const selectedConversation = conversations.find(
+          (e) => e.uuid === conversationActive
+        );
+        if (selectedConversation) {
+          setMessages(selectedConversation?.messages);
+        } else {
+          setMessages(conversations[conversations.length - 1]?.messages);
+        }
+        setCurrUuid(conversationActive);
+      }
+    }
+  }, [conversationActive]);
+
+  const onSelect = useCallback((uuid: string) => {
+    dispatch(setConversationActive(uuid));
+    setIsMenuOpen(false);
+  }, []);
+
+  const handleSubmit = async () => {
+    try {
+      const configuration = new Configuration({
+        apiKey: process.env.NEXT_PUBLIC_OPEN_AI_API_KEY,
+      });
+      const openai = new OpenAIApi(configuration);
+
+      const newResponse = [
+        ...(messages || []),
+        { isPerson: true, content: prompt },
+      ];
+      let uuid = currUuid || "";
+      let payload: IConversation[] = [];
+      if (!currUuid) {
+        uuid = uuidV4();
+        setCurrUuid(uuid);
+        dispatch(setConversationActive(uuid));
+      }
+      const cloned = [...conversations];
+      let updatedData = updateConversationByUuid(cloned, uuid, {
+        uuid,
+        title: prompt,
+        messages: newResponse,
+      });
+
+      payload = [
+        ...(cloned || []),
+        {
+          uuid,
+          title: prompt,
+          messages: newResponse,
+        },
+      ];
+      if (updatedData.length) {
+        if (isNewChat) {
+          setIsNewChat(false);
+        } else {
+          payload = [...updatedData];
+        }
+      }
+      dispatch(updateConversation(payload));
+      setPrompt("");
+      setMessages(newResponse);
+
+      setLoading(true);
+      const res = await openai.createCompletion({
+        model: process.env.NEXT_PUBLIC_OPEN_AI_API_MODEL!,
+        prompt: prompt,
+      });
+      const result = res?.data?.choices?.[0]?.text || "";
+      const newMessages = [
+        ...newResponse,
+        { isPerson: false, content: result },
+      ];
+      let updatedConversation = updateConversationByUuid([...payload], uuid, {
+        uuid,
+        title: prompt,
+        messages: newMessages,
+      });
+
+      dispatch(updateConversation(updatedConversation));
+
+      setMessages(newMessages);
+      setLoading(false);
+    } catch (err) {
+      console.log(err);
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (value: string) => {
+    setPrompt(value);
+  };
+
+  const handleAddConversation = useCallback(() => {
+    setCurrUuid("");
+    setIsNewChat(true);
+    setPrompt("");
+    setMessages([]);
+  }, []);
+
+  const onToggleMenu = useCallback((status: boolean) => {
+    dispatch(setMenuOpen(status));
+    setIsMenuOpen(status);
+  }, []);
+
   return (
     <>
       <Head>
-        <title>Create Next App</title>
-        <meta name="description" content="Generated by create next app" />
+        <title>Open chat</title>
+        <meta name="description" content="Open chat" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="/favicon.ico" />
+        <link rel="icon" href="/logo_2.png" />
       </Head>
-      <main className={`${styles.main} ${inter.className}`}>
-        <div className={styles.description}>
-          <p>
-            Get started by editing&nbsp;
-            <code className={styles.code}>src/pages/index.tsx</code>
-          </p>
-          <div>
-            <a
-              href="https://vercel.com?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              By{' '}
+      <Sidebar
+        open={isMenuOpen}
+        onToggle={onToggleMenu}
+        onAddConversation={handleAddConversation}
+        onSelect={onSelect}
+      />
+      {!!(!isMenuOpen && !isDesktop) || isDesktop ? (
+        <Container ref={scrollRef} isMenuOpen={isMenuOpen}>
+          {!messages?.length && (
+            <>
               <Image
-                src="/vercel.svg"
-                alt="Vercel Logo"
-                className={styles.vercelLogo}
-                width={100}
-                height={24}
+                src="/logo.webp"
+                alt="Open chat logo"
+                width={200}
+                height={200}
                 priority
               />
-            </a>
-          </div>
-        </div>
+              <Title>Welcome to Open AI Chat</Title>
+            </>
+          )}
 
-        <div className={styles.center}>
-          <Image
-            className={styles.logo}
-            src="/next.svg"
-            alt="Next.js Logo"
-            width={180}
-            height={37}
-            priority
-          />
-        </div>
-
-        <div className={styles.grid}>
-          <a
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Docs <span>-&gt;</span>
-            </h2>
-            <p>
-              Find in-depth information about Next.js features and&nbsp;API.
-            </p>
-          </a>
-
-          <a
-            href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Learn <span>-&gt;</span>
-            </h2>
-            <p>
-              Learn about Next.js in an interactive course with&nbsp;quizzes!
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Templates <span>-&gt;</span>
-            </h2>
-            <p>
-              Discover and deploy boilerplate example Next.js&nbsp;projects.
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Deploy <span>-&gt;</span>
-            </h2>
-            <p>
-              Instantly deploy your Next.js site to a shareable URL
-              with&nbsp;Vercel.
-            </p>
-          </a>
-        </div>
-      </main>
+          <Result>
+            {messages?.length > 0 &&
+              messages.map((item, i) => (
+                <Row key={i}>
+                  <Image
+                    src={item?.isPerson ? "/person.png" : "/logo_2.png"}
+                    alt="Open chat logo"
+                    width={30}
+                    height={30}
+                    priority
+                  />
+                  <span>{item.content}</span>
+                </Row>
+              ))}
+          </Result>
+          {loading && <DotLoading />}
+          <InputWrapper isMenuOpen={isMenuOpen}>
+            <SearchInput
+              onChange={handleChange}
+              onSubmit={handleSubmit}
+              placeholder="Send a message"
+              value={prompt}
+            />
+          </InputWrapper>
+        </Container>
+      ) : (
+        <></>
+      )}
     </>
-  )
-}
+  );
+};
+
+export default HomePage;
